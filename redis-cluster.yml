@@ -75,42 +75,47 @@ data:
     
     PORT=6379
     CLUSTER_IPS=""
-
-    #CLUSTER_BUILDER=$(getent hosts redis-cluster-5.redis-cluster.dipper.svc.cluster.local|awk {'print $1'})
-
     PET_ORDINAL=$(cat /etc/podinfo/pod_name | rev | cut -d- -f1)
+
+    REBOOT_FLAG=$(cat /var/lib/redis/node.conf 2>/dev/null | wc -l)
+    POD_IP=$(getent hosts $HOSTNAME.$SERVICE_NAME.$POD_NAMESPACE.svc.cluster.local|awk {'print $1'})
+
     sleep 10
-    if [[ $PET_ORDINAL == 7 ]]; then
+
+    if [[ $REBOOT_FLAG == 2 && $PET_ORDINAL == 7 ]]; then #a new pod_7 has been created, then create cluster
+      echo "here is a new redis cluster node"
       echo "creating cluster..."
-      sleep 5
       while read -ra LINE
       do
-        echo "check cluster node ..."
-        for PEER_IP in $(getent hosts ${LINE} | cut -d ' ' -f1)
-        do
-          if [[ $(redis-cli -h $PEER_IP ping) == PONG ]]
-          then
-            return 0
-          fi
-        done
         CLUSTER_IPS="${CLUSTER_IPS} $(getent hosts ${LINE} | cut -d ' ' -f1):${PORT}"
       done
-      until redis-cli -h 127.0.0.1 ping; do sleep 1; done
+      echo "check cluster node ..."
+      for PEER_IP in $(getent hosts ${LINE} | cut -d ' ' -f1)
+      do
+        until redis-cli -h $PEER_IP ping; do sleep 1; done
+      done
       echo yes | /usr/local/bin/redis-trib.rb create --replicas 1 ${CLUSTER_IPS}
-#    elif [[ $PET_ORDINAL -gt 5 ]]; then
-#      echo "add new node..."
-#      sleep 10
-#      if [[ $(expr $PET_ORDINAL % 2) == 0 ]]; then
-#        echo "add as a master node..."
-#        /usr/local/bin/redis-trib.rb add-node $(getent hosts $(hostname)|awk {'print $1'}):$PORT $CLUSTER_BUILDER:$PORT
-#      else
-#        echo "add slave for the new master..."
-#        /usr/local/bin/redis-trib.rb add-node --slave $(getent hosts $(hostname)|awk {'print $1'}):$PORT $CLUSTER_BUILDER:$PORT
-#        echo $CLUSTER_BUILDER
-#        /usr/local/bin/redis-trib.rb rebalance --use-empty-masters $CLUSTER_BUILDER:$PORT
-#      fi
-    else
+    elif [[ $REBOOT_FLAG >= 2 ]];then #a used pod has been found,and meet into the cluster
+      echo "here is a used node from other cluster"
+      redis-cli -c cluster meet $(POD_IP) $(PORT)
+
+    #elif [[ $PET_ORDINAL -gt 5 ]]; then
+    #  echo "add new node..."
+    #  sleep 10
+    #  if [[ $(expr $PET_ORDINAL % 2) == 0 ]]; then
+    #    echo "add as a master node..."
+    #    /usr/local/bin/redis-trib.rb add-node $(getent hosts $(hostname)|awk {'print $1'}):$PORT $CLUSTER_BUILDER:$PORT
+    #  else
+    #    echo "add slave for the new master..."
+    #    /usr/local/bin/redis-trib.rb add-node --slave $(getent hosts $(hostname)|awk {'print $1'}):$PORT $CLUSTER_BUILDER:$PORT
+    #    echo $CLUSTER_BUILDER
+    #    /usr/local/bin/redis-trib.rb rebalance --use-empty-masters $CLUSTER_BUILDER:$PORT
+    #  fi
+
+    elif [[ $REBOOT_FLAG == 2 && $PET_ORDINAL < 7 ]];then 
       echo "cluster too small"
+    else 
+      echo "there is an unknow error "
     fi
 ---
 apiVersion: apps/v1beta1
@@ -126,9 +131,6 @@ spec:
       labels:
         app: redis-cluster
       annotations:
-        # Add a baked-in Redis config file that enables cluster mode
-        #pod.alpha.kubernetes.io/init-containers: '[
-        #]'
     spec:
       terminationGracePeriodSeconds: 10
       #hostNetwork: true
@@ -144,28 +146,35 @@ spec:
         - sh
         args:
         - /conf/bootstrap-pod.sh
-       # readinessProbe:
-       #   exec:
-       #     command:
-       #     - sh
-       #     - -c
-       #     - "redis-cli -h $(hostname) ping"
-       #   initialDelaySeconds: 15
-       #   timeoutSeconds: 5
+        # the health check of redis-cluster
+         # readinessProbe:
+         #   exec:
+         #     command:
+         #     - sh
+         #     - -c
+         #     - "redis-cli -h $(hostname) ping"
+         #   initialDelaySeconds: 15
+         #   timeoutSeconds: 5
 
-       # livenessProbe:
-       #   exec:
-       #     command:
-       #     - sh
-       #     - -c
-       #     - "redis-cli -h $(hostname) ping"
-       #   initialDelaySeconds: 20
-       #   periodSeconds: 3
+         # livenessProbe:
+         #   exec:
+         #     command:
+         #     - sh
+         #     - -c
+         #     - "redis-cli -h $(hostname) ping"
+         #   initialDelaySeconds: 20
+         #   periodSeconds: 3
+        # set some ENV from the yaml of redis-cluster
         env:
         - name: POD_NAMESPACE
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        - name: SERVICE_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: spec.servicename
+        # mount all things on the redis container's filesystem
         volumeMounts:
         - name: data
           mountPath: /var/lib/redis
@@ -176,6 +185,7 @@ spec:
         - name: podinfo
           mountPath: /etc/podinfo
           readOnly: false
+      # create PVC and volumes from storageclass 
       volumes:
       - name: "data"
         persistentVolumeClaim:
@@ -187,7 +197,7 @@ spec:
           items: 
           - key: redis.conf
             path: redis.conf
-          - key: bootstrap-pod.sh  # TODO: Move this or extract it into its own Docker image
+          - key: bootstrap-pod.sh  
             path: bootstrap-pod.sh
           - key: meet-cluster.sh
             path: meet-cluster.sh

@@ -76,20 +76,26 @@ data:
     PORT=6379
     CLUSTER_IPS=""
 
-    CLUSTER_BUILDER=$(getent hosts redis-cluster-5.redis-cluster.dipper.svc.cluster.local|awk {'print $1'})
-
+    pod_name=$(cat /etc/podinfo/pod_name)
+    ns=$(cat /etc/podinfo/pod_namespace)
+    podIP=$(getent hosts $(pod_name).redis-cluster.$(ns).svc.cluster.local|awk {'print $1'})
     PET_ORDINAL=$(cat /etc/podinfo/pod_name | rev | cut -d- -f1)
+
     sleep 10
-    if [[ $PET_ORDINAL == 7 ]]; then
-      echo "creating cluster..."
-      sleep 10
-      while read -ra LINE; do
-        CLUSTER_IPS="${CLUSTER_IPS} $(getent hosts ${LINE} | cut -d ' ' -f1):${PORT}"
-      done
-      until redis-cli -h 127.0.0.1 ping; do sleep 1; done
-      echo yes | /usr/local/bin/redis-trib.rb create --replicas 1 ${CLUSTER_IPS}
-    else
-      echo "cluster too small"
+    if [[ -f /var/lib/redis/nodes.conf ]]; then
+      echo "nodes.conf exists"
+      LC=$(cat /var/lib/redis/nodes.conf | wc -l)
+      echo "lines of nodes.conf is "$lc
+      if [[ $LC <= 2 && $PET_ORDINAL == 7 ]]; then
+        echo "creating cluster..."
+        while read -ra LINE; do
+          CLUSTER_IPS="${CLUSTER_IPS} $(getent hosts ${LINE} | cut -d ' ' -f1):${PORT}"
+        done
+        until redis-cli -h 127.0.0.1 ping; do sleep 1; done
+        echo yes | /usr/local/bin/redis-trib.rb create --replicas 1 ${CLUSTER_IPS}
+      elif [[ $lc > 2 ]]; then
+        redis-cli -c cluster meet $(podIP) $(PORT)
+      fi
     fi
 ---
 apiVersion: apps/v1beta1
@@ -126,14 +132,14 @@ spec:
         - /conf/bootstrap-pod.sh
         # Ensure that Redis is online before initializing the next node.
         # TODO: Test that the cluster node is init'd properly.
-        readinessProbe:
-          exec:
-            command:
-            - sh
-            - -c
-            - "redis-cli -h $(hostname) ping"
-          initialDelaySeconds: 30
-          timeoutSeconds: 10
+        #readinessProbe:
+        #  exec:
+        #    command:
+        #    - sh
+        #    - -c
+        #    - "redis-cli -h $(hostname) ping"
+        #  initialDelaySeconds: 30
+        #  timeoutSeconds: 10
 
         # Mark a node as down if Redis server stops running
         livenessProbe:
@@ -142,8 +148,8 @@ spec:
             - sh
             - -c
             - "redis-cli -h $(hostname) ping"
-          initialDelaySeconds: 30
-          periodSeconds: 8
+          initialDelaySeconds: 15
+          periodSeconds: 5
         env:
         - name: POD_NAMESPACE
           valueFrom:
