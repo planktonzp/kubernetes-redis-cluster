@@ -77,7 +77,7 @@ data:
     CLUSTER_IPS=""
     PET_ORDINAL=$(cat /etc/podinfo/pod_name | rev | cut -d- -f1)
 
-    REBOOT_FLAG=$(cat /var/lib/redis/node.conf 2>/dev/null | wc -l)
+    REBOOT_FLAG=$(cat /var/lib/redis/nodes.conf 2>/dev/null | wc -l)
     POD_IP=$(getent hosts $HOSTNAME.$SERVICE_NAME.$POD_NAMESPACE.svc.cluster.local|awk {'print $1'})
 
     sleep 10
@@ -95,7 +95,7 @@ data:
         until redis-cli -h $PEER_IP ping; do sleep 1; done
       done
       echo yes | /usr/local/bin/redis-trib.rb create --replicas 1 ${CLUSTER_IPS}
-    elif [[ $REBOOT_FLAG >= 2 ]];then #a used pod has been found,and meet into the cluster
+    elif [[ $REBOOT_FLAG > 2 ]];then #a used pod has been found,and meet into the cluster
       echo "here is a used node from other cluster"
       redis-cli -c cluster meet $(POD_IP) $(PORT)
 
