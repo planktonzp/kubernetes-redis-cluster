@@ -134,7 +134,7 @@ spec:
       #hostNetwork: true
       containers:
       - name: redis-cluster
-        image: hub.bonc:5000/redis:3.2.8-rb
+        image: dipperroy/redis:3.2.8-rb
         ports:
         - containerPort: 6379
           name: client
